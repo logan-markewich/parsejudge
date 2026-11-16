@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { api, type Preset, type PresetSummary, type Run } from "./api.ts";
 import { Icon } from "./ax/Icon.tsx";
 import { type HeadToHead, mountReport, type PageRow } from "./ax/report-charts.ts";
+import { type HeadToHeadFocus, h2hMatch, h2hQuery } from "./h2h.ts";
 import { presetTones, providerName, shortName } from "./names.ts";
 import { navigate } from "./router.ts";
 
@@ -54,17 +55,28 @@ export const SmallSampleNotice = ({ pages }: { readonly pages: number }) => {
   );
 };
 
+const writeFocus = (f: HeadToHeadFocus | null) => {
+  const query = new URLSearchParams(location.search);
+  query.delete("h2h");
+  const rest = query.toString();
+  const search = [f ? h2hQuery(f) : "", rest].filter(Boolean).join("&");
+  history.replaceState(history.state, "", `${location.pathname}${search ? `?${search}` : ""}${location.hash}`);
+};
+
 export const Report = ({
   run,
   presets,
   title,
   reveal = "",
+  h2h = null,
 }: {
   readonly run: Run;
   readonly presets: ReadonlyArray<Preset>;
   readonly title: string;
   /** "is-pre" holds the sections down; "is-in" lets them rise in after the load state. */
   readonly reveal?: string;
+  /** The head-to-head focus from the URL. */
+  readonly h2h?: HeadToHeadFocus | null;
 }) => {
   const summary = run.summary;
   const byId = useMemo(() => new Map(presets.map((p) => [p.id, p])), [presets]);
@@ -112,6 +124,8 @@ export const Report = ({
   }, [run]);
 
   const root = useRef<HTMLDivElement>(null);
+  const [focus, setFocus] = useState(h2h);
+  const pageLink = (pageId: string, f: HeadToHeadFocus | null) => `/r/${run.shareId}/p/${pageId}${f ? `?${h2hQuery(f)}` : ""}`;
   const [grown, setGrown] = useState(false);
   const [sort, setSort] = useState<Sort>({ key: "mean", desc: true });
   const rank = useMemo(() => new Map(ranked.map((p, i) => [p.presetId, i + 1])), [ranked]);
@@ -178,14 +192,20 @@ export const Report = ({
         }
         h2h[a.id] = { ...h2h[a.id], [b.id]: r };
       }
+    if (focus === null && new URLSearchParams(location.search).has("h2h")) writeFocus(null);
     const stop = mountReport(el, {
       entries,
       pages,
       h2h: h2h as HeadToHead,
       contentHidden: contentHidden || gone,
       detail: (pageId) => api.page(run.id, pageId).catch(() => null),
-      compare: (pageId) => `/r/${run.shareId}/p/${pageId}`,
+      compare: pageLink,
       navigate,
+      focus,
+      onFocus: (f) => {
+        setFocus(f);
+        writeFocus(f);
+      },
     });
     const raf = requestAnimationFrame(() => setGrown(true));
     return () => {
@@ -198,18 +218,23 @@ export const Report = ({
 
   const date = new Date(run.createdAt).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
   const mcp = `claude mcp add --transport http parsejudge ${location.origin}/mcp`;
-  const first = pages[0];
+  const focused = focus ? pages.filter((p) => h2hMatch(focus, p.by)) : [];
+  const first = focus
+    ? focused.reduce<PageRow | undefined>((top, p) => (top && top.gap >= p.gap ? top : p), undefined)
+    : pages[0];
+  const firstHref = first && pageLink(first.id, focus);
   const allPages =
-    first && !contentHidden && !gone ? (
+    first && firstHref && !contentHidden && !gone ? (
       <a
         className="btn primary"
-        href={`/r/${run.shareId}/p/${first.id}`}
+        href={firstHref}
         onClick={(e) => {
+          if (e.metaKey || e.ctrlKey || e.shiftKey) return;
           e.preventDefault();
-          navigate(`/r/${run.shareId}/p/${first.id}`);
+          navigate(firstHref);
         }}
       >
-        <span className="btn-label">All pages</span>
+        <span className="btn-label">{focus ? `${focused.length} ${focused.length === 1 ? "page" : "pages"}` : "All pages"}</span>
         <Icon name="arrow-right" />
       </a>
     ) : null;
